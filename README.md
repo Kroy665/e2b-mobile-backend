@@ -202,6 +202,8 @@ All error responses share a consistent shape:
 { "error": { "code": "VALIDATION_ERROR", "message": "...", "details": {}, "requestId": "..." } }
 ```
 
+**Create-vs-fetch response shape convention**: a resource-creating `POST` (`POST /sandboxes`, `POST /sandboxes/:id/servers`) returns only the fields known at creation time (e.g. sandbox: `{id, sandboxId, repoUrl, status}`; server: `{id, port, url, pid, command, status}`) — it does not re-fetch the full row. The corresponding `GET` (list or by-id) returns the full row, including `error_message`, `created_at`, `updated_at`, etc. This is deliberate (avoids an extra DB round-trip on the hot path of "just created it"), not an oversight — a client should model these as distinct types rather than one loose shape if it wants full type safety.
+
 ## Production hardening included
 
 - Helmet security headers, CORS allowlist (`CORS_ORIGINS` env var)
