@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
 export const startServerSchema = z.object({
-  command: z.string().trim().min(1).max(2000),
+  /** If omitted, the repo directory is served as static files on the given port. */
+  command: z.string().trim().min(1).max(2000).optional(),
   port: z.coerce.number().int().min(1).max(65535),
 });
 

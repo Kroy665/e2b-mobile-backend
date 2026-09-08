@@ -48,9 +48,13 @@ export async function startServer(userId: string, sandboxRowId: string, input: S
     throw ApiError.conflict(`A server is already running on port ${input.port}`);
   }
 
+  // No command given: serve the repo directory as static files instead of
+  // running some app-specific dev command.
+  const command = input.command ?? `python3 -m http.server ${input.port}`;
+
   let handle;
   try {
-    handle = await sandbox.commands.run(input.command, {
+    handle = await sandbox.commands.run(command, {
       cwd: SANDBOX_REPO_PATH,
       background: true,
     });
@@ -66,7 +70,7 @@ export async function startServer(userId: string, sandboxRowId: string, input: S
     user_id: userId,
     pid: handle.pid,
     port: input.port,
-    command: input.command,
+    command,
     url,
     status: 'running' as const,
     error_message: null,
