@@ -29,4 +29,14 @@ describe('resolveSafePath', () => {
     // sibling directory, not a subdirectory — must not be allowed through.
     expect(() => resolveSafePath(BASE, '../app-evil/secret')).toThrow();
   });
+
+  it('round-trips a repo-relative path the way a file-listing response must produce it', () => {
+    // Regression test: an API that lists files must strip any leading slash
+    // before handing a path back to the client, since a leading-slash path
+    // here is treated as absolute (and rejected above) rather than
+    // reinterpreted as base-relative. This asserts the contract a listing
+    // endpoint's output has to satisfy to be safely round-trippable.
+    const listedPath = 'src/index.ts'; // NOT '/src/index.ts'
+    expect(resolveSafePath(BASE, listedPath)).toBe('/home/user/app/src/index.ts');
+  });
 });

@@ -44,7 +44,12 @@ export async function listFiles(userId: string, sandboxRowId: string, dirPath: s
       .filter((e) => e.name !== '.git')
       .map((e) => ({
         name: e.name,
-        path: e.path.slice(SANDBOX_REPO_PATH.length) || '/',
+        // Repo-relative, no leading slash, so this is safe to pass straight
+        // back into readFile/writeFile/deleteFile/listFiles — a leading slash
+        // here would make path.resolve() treat it as absolute and discard the
+        // repo base, tripping the traversal guard on a path we generated
+        // ourselves.
+        path: e.path.slice(SANDBOX_REPO_PATH.length).replace(/^\/+/, '') || '.',
         type: e.type,
         size: e.size,
       }));
