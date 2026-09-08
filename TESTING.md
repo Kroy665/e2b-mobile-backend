@@ -104,12 +104,14 @@ Automated test suite: `npm test` — 28 tests across 8 files, all passing. These
 ```
 "new row violates row-level security policy for table \"...\""
 ```
-Observed on `profiles`, `oauth_states`, `sandboxes`, and `ai_provider_keys` inserts — always via the `supabaseAdmin` (secret-key) client, which should bypass RLS via Postgres's `BYPASSRLS` role attribute (confirmed the role resolves correctly as `service_role` via a diagnostic RPC). Root cause not identified:
-- Raw one-shot Node scripts using the identical client and identical calls **never** reproduce it — only requests through the running Express server sometimes fail.
-- A **full process kill + restart** reliably clears it every time it was hit; `tsx watch`'s in-place hot-reload restart does **not** reliably clear it.
+Observed on `profiles`, `oauth_states`, `sandboxes`, and `ai_provider_keys` inserts — always via the `supabaseAdmin` (secret-key) client, which should bypass RLS via Postgres's `BYPASSRLS` role attribute (confirmed the role resolves correctly as `service_role` via a diagnostic RPC, both locally and while the bug was actively occurring). Also reproduced on the live Render deployment, not just local dev — ruling out anything specific to `tsx watch` or the local machine. Root cause not identified:
+- Raw one-shot Node scripts using the identical client and identical calls **never** reproduce it — only requests through a long-running server process sometimes fail.
+- A **full process restart** (local kill+restart, or a Render redeploy) reliably clears it every time it was hit; `tsx watch`'s in-place hot-reload restart does **not** reliably clear it.
 - Statistical runs (15–20 consecutive requests) sometimes show 0% failure, sometimes fail consistently for a stretch, then clear on their own or after a restart.
+- On the Render deployment, the failure was observed at ~967s (~16 min) of process uptime — matching a ~16 minute `iat`/`exp` window seen earlier in the internal service-role JWT that Supabase's platform derives from `SUPABASE_SECRET_KEY` (inspected via a temporary diagnostic RPC). This suggests the platform-side token exchange behind the newer `sb_secret_...` key format may not be refreshing correctly for long-lived server processes, though this is not confirmed.
+- Ruled out: `autoRefreshToken` on the `supabaseAdmin` client — that option only governs refreshing a logged-in user's session (via their `refresh_token`); `supabaseAdmin` never establishes a session, so this setting cannot affect it either way (verified in `@supabase/auth-js` source).
 
-Workaround: if this error appears during local development, fully kill and restart `npm run dev` (not just save a file) rather than relying on hot-reload.
+Workaround: if this error appears, fully restart the process (local: kill and restart `npm run dev`, not just save a file; production: trigger a redeploy) rather than expecting it to self-heal quickly. Worth filing as a Supabase support ticket given it reproduces on their hosted platform with the new API key format, independent of anything in this codebase.
 
 ## Not yet built / not tested because the feature doesn't exist
 
