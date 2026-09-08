@@ -2,6 +2,7 @@ import { createApp } from './app';
 import { env } from './config/env';
 import { logger } from './config/logger';
 import { attachOpencodeStreamServer } from './ws/opencodeStream';
+import { attachServerLogsServer } from './ws/serverLogs';
 import { attachTerminalServer } from './ws/terminal';
 
 const app = createApp();
@@ -12,6 +13,7 @@ const server = app.listen(env.PORT, () => {
 
 attachTerminalServer(server);
 attachOpencodeStreamServer(server);
+attachServerLogsServer(server);
 
 function shutdown(signal: string) {
   logger.info(`Received ${signal}, shutting down gracefully...`);

@@ -9,7 +9,7 @@ import { getProviderEnvVars } from '../ai-provider/ai-provider.service';
 import { getDecryptedAccessToken } from '../github/github.service';
 import { CreateSandboxInput, RunOpencodeInput } from './sandboxes.schemas';
 
-const SANDBOX_REPO_PATH = '/home/user/app';
+export const SANDBOX_REPO_PATH = '/home/user/app';
 
 interface SandboxRow {
   id: string;
@@ -112,32 +112,40 @@ export async function getSandbox(userId: string, sandboxRowId: string) {
 }
 
 /**
- * Runs opencode non-interactively inside a ready sandbox with the given
- * prompt. Injects any AI provider keys the user has configured (e.g.
- * ANTHROPIC_API_KEY) so `model` can reference a paid provider; otherwise
- * opencode falls back to its own free-tier models.
+ * Verifies the sandbox belongs to the user and is usable, then connects to
+ * it — transparently resuming it if it was paused (full filesystem/memory
+ * state intact), flipping its row back to `ready` when that happens. Shared
+ * by every module that needs to run something inside a sandbox (files, git,
+ * opencode, servers).
  */
-export async function runOpencode(userId: string, sandboxRowId: string, input: RunOpencodeInput) {
+export async function connectToSandbox(userId: string, sandboxRowId: string): Promise<Sandbox> {
   const row = await getSandbox(userId, sandboxRowId);
 
   if ((row.status !== 'ready' && row.status !== 'paused') || !row.e2b_sandbox_id) {
     throw ApiError.badRequest('Sandbox is not ready');
   }
 
-  const providerEnvVars = await getProviderEnvVars(userId);
-
-  let sandbox: Sandbox;
   try {
-    // Sandbox.connect() transparently resumes a paused sandbox (full
-    // filesystem/memory state intact) as well as connecting to a running one.
-    sandbox = await Sandbox.connect(row.e2b_sandbox_id, { apiKey: env.E2B_API_KEY });
+    const sandbox = await Sandbox.connect(row.e2b_sandbox_id, { apiKey: env.E2B_API_KEY });
     if (row.status === 'paused') {
       await markSandboxReady(row.id);
     }
+    return sandbox;
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     throw ApiError.internal('Failed to connect to sandbox', message);
   }
+}
+
+/**
+ * Runs opencode non-interactively inside a ready sandbox with the given
+ * prompt. Injects any AI provider keys the user has configured (e.g.
+ * ANTHROPIC_API_KEY) so `model` can reference a paid provider; otherwise
+ * opencode falls back to its own free-tier models.
+ */
+export async function runOpencode(userId: string, sandboxRowId: string, input: RunOpencodeInput) {
+  const providerEnvVars = await getProviderEnvVars(userId);
+  const sandbox = await connectToSandbox(userId, sandboxRowId);
 
   const modelArgs = input.model ? ['--model', shellQuote(input.model)] : [];
   const sessionArgs = input.sessionId ? ['--session', shellQuote(input.sessionId)] : [];
@@ -228,6 +236,15 @@ export async function terminateSandbox(userId: string, sandboxRowId: string) {
       void err;
     }
   }
+
+  // Any background servers started in this sandbox are gone for good along
+  // with it (unlike pauseSandbox, which preserves memory state and leaves
+  // them running — see servers.service.ts).
+  await supabaseAdmin
+    .from('sandbox_servers')
+    .update({ status: 'stopped', updated_at: new Date().toISOString() })
+    .eq('sandbox_id', row.id)
+    .eq('status', 'running');
 
   await updateSandboxRow(row.id, { status: 'terminated' });
   return { id: row.id, status: 'terminated' as const };

@@ -6,6 +6,7 @@ import { requireAuth } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { filesRouter } from './files.routes';
 import { gitRouter } from './git.routes';
+import { serversRouter } from './servers.routes';
 import { createSandboxSchema, runOpencodeSchema, sandboxIdParamSchema } from './sandboxes.schemas';
 import * as sandboxesService from './sandboxes.service';
 
@@ -14,6 +15,7 @@ export const sandboxesRouter = Router();
 sandboxesRouter.use(requireAuth);
 sandboxesRouter.use('/:id/files', filesRouter);
 sandboxesRouter.use('/:id/git', gitRouter);
+sandboxesRouter.use('/:id/servers', serversRouter);
 
 sandboxesRouter.post(
   '/',

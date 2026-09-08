@@ -26,12 +26,12 @@ src/
     users/            # profile read/update (RLS-enforced via user-scoped client)
     github/           # GitHub OAuth connect flow, encrypted token storage, repo listing
     ai-provider/      # Encrypted storage of user AI provider keys (anthropic/openai/openrouter/google)
-    sandboxes/        # E2B sandbox creation, repo clone, opencode runs, files, git
+    sandboxes/        # E2B sandbox creation, repo clone, opencode runs, files, git, background servers
     health/           # /healthz (liveness), /readyz (readiness)
   types/              # Express request augmentation
-  ws/                 # WebSocket terminal + streaming opencode relays
+  ws/                 # WebSocket terminal, streaming opencode, and server-logs relays
 supabase/
-  migrations/         # SQL migrations (profiles, github_connections, sandboxes, oauth_states, ai_provider_keys)
+  migrations/         # SQL migrations (profiles, github_connections, sandboxes, oauth_states, ai_provider_keys, sandbox_servers)
 ```
 
 Two Supabase clients are used deliberately:
@@ -102,6 +102,24 @@ The default sandbox template (`E2B_TEMPLATE_ID`) comes with [opencode](https://o
 - Git is invoked directly via `sandbox.commands.run('git ...')` rather than the E2B SDK's `Git` class, which is deprecated as of the current `e2b` version.
 - **Credential redaction**: git's own output (e.g. the "branch set up to track '...'" message from `--set-upstream`) can echo back the authenticated remote URL verbatim, including the token. `src/lib/redactCredentials.ts` (unit-tested) strips any embedded `user:token@` credentials from all git stdout/stderr before it's returned in an API response — verified this actually would have leaked the token before the fix was added.
 
+### Background servers (e.g. running a dev server and getting a public URL)
+
+Lets a client start a long-running command inside a sandbox (`npm run dev`, `python manage.py runserver`, anything that binds a port) and get back a real, publicly reachable URL for it — using E2B's `sandbox.getHost(port)`, which returns a hostname in the form `<port>-<sandboxId>.e2b.app`.
+
+- **`POST /api/v1/sandboxes/:id/servers`** — `{ command, port }`. Runs the command as a background process (`sandbox.commands.run(cmd, { background: true })` — critical: without `background: true` the call blocks forever for a server process that never exits on its own) and returns `{ id, port, url, pid, command, status }`. Rejects with `409` if a server is already `running` on that port.
+- **`GET /api/v1/sandboxes/:id/servers`** — lists servers tracked for the sandbox (in the `sandbox_servers` table). Each `running` row is re-verified against the sandbox's actual live process list (`sandbox.commands.list()`) on every call, since a process can crash or exit on its own between requests — a row believed `running` that's no longer alive is corrected to `stopped` before the response is sent.
+- **`DELETE /api/v1/sandboxes/:id/servers/:port`** — kills the process (`sandbox.commands.kill(pid)`) and marks the row `stopped`.
+- **Why a DB table at all**: a fresh `Sandbox.connect()` per request has no memory of what a previous request started — E2B's own `commands.list()` can tell you a PID is alive but has no notion of "port", so `sandbox_servers` is the source of truth for the port↔command↔URL mapping, while liveness is always independently re-checked against the sandbox.
+- **Persistence across pause/resume vs. terminate**: pausing a sandbox preserves full memory state, so a running server survives a pause/resume cycle — its row is left `running`. Terminating a sandbox destroys everything, so `terminateSandbox` marks every `running` server row for it `stopped`.
+
+### Live server logs (WebSocket)
+
+`WS /api/v1/sandboxes/:id/servers/:port/logs?token=<access_token>` streams a running server's stdout/stderr live, by **attaching** to its already-running process (`sandbox.commands.connect(pid)`) rather than starting a new one.
+
+- Frames are `{"type":"stdout"|"stderr","data":"..."}` as output is produced, and a final `{"type":"exit","exitCode":N}` if the process ends while a client is attached.
+- **Closing this connection does not stop the server** — it calls `handle.disconnect()` (detach only), not `kill()`. The whole point of a background server is that it keeps running after you stop watching its logs; stopping it is the separate, explicit `DELETE /servers/:port`.
+- Verified live: started a real server, streamed real access-log lines over the socket as requests hit it, closed the socket, confirmed the server was still running and reachable afterward.
+
 ## Getting started
 
 ```bash
@@ -121,7 +139,7 @@ supabase link --project-ref <your-project-ref>
 supabase db push
 ```
 
-This creates the `profiles`, `github_connections`, `sandboxes`, `oauth_states`, and `ai_provider_keys` tables with RLS policies so users can only read their own rows (writes to all but `profiles` happen exclusively via the server-side secret-role client).
+This creates the `profiles`, `github_connections`, `sandboxes`, `oauth_states`, `ai_provider_keys`, and `sandbox_servers` tables with RLS policies so users can only read their own rows (writes to all but `profiles` happen exclusively via the server-side secret-role client).
 
 ## Scripts
 
@@ -171,8 +189,12 @@ All routes are prefixed `/api/v1` except health checks.
 | GET | `/api/v1/sandboxes/:id/git/status` | bearer | Current branch + changed files |
 | POST | `/api/v1/sandboxes/:id/git/commit` | bearer | Stage all changes and commit |
 | POST | `/api/v1/sandboxes/:id/git/push` | bearer | Push the current (or given) branch using the user's GitHub token |
+| POST | `/api/v1/sandboxes/:id/servers` | bearer | Start a background server (e.g. `npm run dev`), returns its public URL |
+| GET | `/api/v1/sandboxes/:id/servers` | bearer | List servers started in this sandbox (re-verifies liveness) |
+| DELETE | `/api/v1/sandboxes/:id/servers/:port` | bearer | Stop a running server |
 | WS | `/api/v1/sandboxes/:id/terminal?token=<access_token>` | token query param | Interactive terminal into the sandbox (see below) |
 | WS | `/api/v1/sandboxes/:id/opencode/stream?token=<access_token>` | token query param | Streamed `opencode` runs, event by event (see below) |
+| WS | `/api/v1/sandboxes/:id/servers/:port/logs?token=<access_token>` | token query param | Live stdout/stderr from a running server (see below) |
 
 All error responses share a consistent shape:
 

@@ -1,30 +1,8 @@
-import { Sandbox } from 'e2b';
-import { env } from '../../config/env';
 import { ApiError } from '../../lib/errors';
 import { resolveSafePath } from '../../lib/safePath';
-import { getSandbox, markSandboxReady } from './sandboxes.service';
+import { SANDBOX_REPO_PATH, connectToSandbox } from './sandboxes.service';
 
-const SANDBOX_REPO_PATH = '/home/user/app';
 const MAX_READABLE_FILE_SIZE = 1_000_000;
-
-async function connectToSandbox(userId: string, sandboxRowId: string): Promise<Sandbox> {
-  const row = await getSandbox(userId, sandboxRowId);
-
-  if ((row.status !== 'ready' && row.status !== 'paused') || !row.e2b_sandbox_id) {
-    throw ApiError.badRequest('Sandbox is not ready');
-  }
-
-  try {
-    const sandbox = await Sandbox.connect(row.e2b_sandbox_id, { apiKey: env.E2B_API_KEY });
-    if (row.status === 'paused') {
-      await markSandboxReady(row.id);
-    }
-    return sandbox;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    throw ApiError.internal('Failed to connect to sandbox', message);
-  }
-}
 
 function safeRepoPath(userPath: string): string {
   try {

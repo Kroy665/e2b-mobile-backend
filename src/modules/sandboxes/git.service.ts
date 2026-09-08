@@ -1,32 +1,10 @@
 import { CommandExitError, Sandbox } from 'e2b';
-import { env } from '../../config/env';
 import { ApiError } from '../../lib/errors';
 import { redactCredentials } from '../../lib/redactCredentials';
 import { shellQuote } from '../../lib/shellQuote';
 import { getDecryptedAccessToken } from '../github/github.service';
-import { getSandbox, markSandboxReady } from './sandboxes.service';
+import { SANDBOX_REPO_PATH, connectToSandbox } from './sandboxes.service';
 import { GitCommitInput, GitPushInput } from './git.schemas';
-
-const SANDBOX_REPO_PATH = '/home/user/app';
-
-async function connectToSandbox(userId: string, sandboxRowId: string): Promise<Sandbox> {
-  const row = await getSandbox(userId, sandboxRowId);
-
-  if ((row.status !== 'ready' && row.status !== 'paused') || !row.e2b_sandbox_id) {
-    throw ApiError.badRequest('Sandbox is not ready');
-  }
-
-  try {
-    const sandbox = await Sandbox.connect(row.e2b_sandbox_id, { apiKey: env.E2B_API_KEY });
-    if (row.status === 'paused') {
-      await markSandboxReady(row.id);
-    }
-    return sandbox;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    throw ApiError.internal('Failed to connect to sandbox', message);
-  }
-}
 
 async function runGit(sandbox: Sandbox, args: string) {
   try {
