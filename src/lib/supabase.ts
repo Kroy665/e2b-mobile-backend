@@ -6,16 +6,15 @@ import { env } from '../config/env';
  * server-side operations (admin tasks, cross-user queries). Never expose
  * results of this client directly without authorization checks.
  *
- * KNOWN ISSUE: intermittent "new row violates row-level security policy"
- * errors have been observed on inserts through this client after the process
- * has been running for a while (roughly correlates with a ~16 minute window
- * seen in the internal service-role JWT's iat/exp, derived from
- * SUPABASE_SECRET_KEY by Supabase's platform). Root cause not yet confirmed;
- * a full process restart reliably clears it. Suspected to be a Supabase
- * platform-side issue with the newer sb_secret_ key format rather than
- * something fixable via client options here (autoRefreshToken does not apply
- * to this client — it only affects session refresh for a logged-in user, and
- * this client never establishes a session). See TESTING.md.
+ * IMPORTANT: never call session-mutating auth methods on this shared
+ * singleton (`auth.signInWithPassword`, `auth.refreshSession`, `auth.signOut`,
+ * etc. — anything other than the `auth.admin.*` namespace). Those methods set
+ * an in-memory session on the client instance itself; since this client is
+ * reused across every request in the process, one user's login would
+ * silently downgrade every concurrent/subsequent request's identity to that
+ * user until something else overwrote it — this was a real bug (see
+ * TESTING.md) that caused intermittent RLS failures across unrelated tables.
+ * Use `createFreshAuthClient()` for any such operation instead.
  */
 export const supabaseAdmin: SupabaseClient = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
@@ -31,5 +30,19 @@ export function createUserScopedClient(accessToken: string): SupabaseClient {
     global: {
       headers: { Authorization: `Bearer ${accessToken}` },
     },
+  });
+}
+
+/**
+ * Creates a brand-new, throwaway client for one-off auth operations that
+ * mutate client-side session state (login, token refresh, etc.). Never
+ * reused across requests, so it's safe for exactly this kind of call —
+ * unlike `supabaseAdmin`, which must stay session-free for its whole
+ * lifetime. Uses the publishable key, matching what a normal client-side
+ * login would use.
+ */
+export function createFreshAuthClient(): SupabaseClient {
+  return createClient(env.SUPABASE_URL, env.SUPABASE_PUBLISHABLE_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
   });
 }

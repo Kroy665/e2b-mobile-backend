@@ -98,20 +98,19 @@ Automated test suite: `npm test` — 28 tests across 8 files, all passing. These
 
 ---
 
-## Known unresolved issue (not a code bug, but affects reliability)
+## RESOLVED: intermittent RLS failures ("new row violates row-level security policy")
 
-**Intermittent Supabase RLS failures on insert**, surfaced repeatedly throughout testing as:
-```
-"new row violates row-level security policy for table \"...\""
-```
-Observed on `profiles`, `oauth_states`, `sandboxes`, and `ai_provider_keys` inserts — always via the `supabaseAdmin` (secret-key) client, which should bypass RLS via Postgres's `BYPASSRLS` role attribute (confirmed the role resolves correctly as `service_role` via a diagnostic RPC, both locally and while the bug was actively occurring). Also reproduced on the live Render deployment, not just local dev — ruling out anything specific to `tsx watch` or the local machine. Root cause not identified:
-- Raw one-shot Node scripts using the identical client and identical calls **never** reproduce it — only requests through a long-running server process sometimes fail.
-- A **full process restart** (local kill+restart, or a Render redeploy) reliably clears it every time it was hit; `tsx watch`'s in-place hot-reload restart does **not** reliably clear it.
-- Statistical runs (15–20 consecutive requests) sometimes show 0% failure, sometimes fail consistently for a stretch, then clear on their own or after a restart.
-- On the Render deployment, the failure was observed at ~967s (~16 min) of process uptime — matching a ~16 minute `iat`/`exp` window seen earlier in the internal service-role JWT that Supabase's platform derives from `SUPABASE_SECRET_KEY` (inspected via a temporary diagnostic RPC). This suggests the platform-side token exchange behind the newer `sb_secret_...` key format may not be refreshing correctly for long-lived server processes, though this is not confirmed.
-- Ruled out: `autoRefreshToken` on the `supabaseAdmin` client — that option only governs refreshing a logged-in user's session (via their `refresh_token`); `supabaseAdmin` never establishes a session, so this setting cannot affect it either way (verified in `@supabase/auth-js` source).
+This surfaced repeatedly throughout testing on `profiles`, `oauth_states`, `sandboxes`, and `ai_provider_keys` inserts, and was initially misdiagnosed as a Supabase platform issue (see git history for the earlier, incorrect writeup). **Root cause found and fixed on 2026-09-08.**
 
-Workaround: if this error appears, fully restart the process (local: kill and restart `npm run dev`, not just save a file; production: trigger a redeploy) rather than expecting it to self-heal quickly. Worth filing as a Supabase support ticket given it reproduces on their hosted platform with the new API key format, independent of anything in this codebase.
+**Actual cause**: `login()` and `refreshSession()` in `src/modules/auth/auth.service.ts` called `supabaseAdmin.auth.signInWithPassword(...)` and `supabaseAdmin.auth.refreshSession(...)` directly on the shared, module-level `supabaseAdmin` singleton. Both of those SDK methods set an **in-memory session on the client instance itself** — `persistSession: false` only controls whether that session is written to disk/localStorage, not whether it's held in memory for the lifetime of the client. Since `supabaseAdmin` is reused across every request in the process, the moment *any* user logged in, every concurrent or subsequent request using `supabaseAdmin` silently started authenticating as **that user's session** instead of the service role — until another login overwrote it again, or nothing did and it stuck. This explains every symptom observed:
+- Confirmed directly: a temporary diagnostic endpoint dumped `jwt_claims` mid-failure and showed `"role":"authenticated"`, `"sub":"<a real user id>"`, `"session_id":"..."` — i.e. `supabaseAdmin` was authenticating as a specific logged-in user, not `service_role`.
+- Why one-shot scripts never reproduced it: they never called `login()`, so `supabaseAdmin` never got a session set on it.
+- Why it correlated loosely with uptime/restarts: purely a function of whether *any* login had happened yet on that process instance, not any actual time-based expiry.
+- Why a restart "fixed" it: a fresh process's `supabaseAdmin` has no session set until the first login happens.
+
+**Fix**: `src/lib/supabase.ts` adds `createFreshAuthClient()` — a throwaway client (publishable key, never reused) for exactly this kind of session-mutating call. `login()` and `refreshSession()` now use it instead of `supabaseAdmin`. Verified other `supabaseAdmin.auth.*` call sites (`admin.createUser`, `admin.signOut`, `resetPasswordForEmail`) are safe as-is — checked the `@supabase/auth-js` source directly; none of them mutate client-side session state, they're plain API calls.
+
+**Verification**: reproduced the failure live in production (`jwt_claims` showing a user's session on `supabaseAdmin`), applied the fix, confirmed `login`/`refreshSession` still work correctly and `supabaseAdmin` inserts no longer fail after logins occur.
 
 ## Not yet built / not tested because the feature doesn't exist
 

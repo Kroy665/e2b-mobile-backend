@@ -1,4 +1,4 @@
-import { supabaseAdmin } from '../../lib/supabase';
+import { createFreshAuthClient, supabaseAdmin } from '../../lib/supabase';
 import { ApiError } from '../../lib/errors';
 import { LoginInput, SignupInput } from './auth.schemas';
 
@@ -33,7 +33,10 @@ export async function signup({ email, password, fullName }: SignupInput) {
 }
 
 export async function login({ email, password }: LoginInput) {
-  const { data, error } = await supabaseAdmin.auth.signInWithPassword({ email, password });
+  // Uses a fresh, throwaway client — never supabaseAdmin, whose session
+  // state must stay untouched for the lifetime of the process (see
+  // src/lib/supabase.ts).
+  const { data, error } = await createFreshAuthClient().auth.signInWithPassword({ email, password });
 
   if (error) {
     throw ApiError.unauthorized('Invalid email or password');
@@ -51,7 +54,8 @@ export async function login({ email, password }: LoginInput) {
 }
 
 export async function refreshSession(refreshToken: string) {
-  const { data, error } = await supabaseAdmin.auth.refreshSession({ refresh_token: refreshToken });
+  // Same reasoning as login(): must not touch supabaseAdmin's session state.
+  const { data, error } = await createFreshAuthClient().auth.refreshSession({ refresh_token: refreshToken });
 
   if (error || !data.session) {
     throw ApiError.unauthorized('Invalid or expired refresh token');
