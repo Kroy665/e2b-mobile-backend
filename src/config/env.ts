@@ -28,7 +28,7 @@ const envSchema = z.object({
   E2B_API_KEY: z.string().min(1),
   // Sandbox template to use (e2b.dev dashboard -> Templates). Defaults to a
   // template preloaded with opencode for AI-assisted coding in the sandbox.
-  E2B_TEMPLATE_ID: z.string().min(1).default('77gbcsv20q8kxklidjhe'),
+  E2B_TEMPLATE_ID: z.string().min(1).default('cice9hn8008bhwbef45h'),
 
   // 32-byte key (base64) used to encrypt stored OAuth tokens at rest (AES-256-GCM)
   TOKEN_ENCRYPTION_KEY: z.string().min(1),
