@@ -14,6 +14,11 @@ export const sandboxIdParamSchema = z.object({
   id: z.string().uuid(),
 });
 
+export const opencodeSessionParamSchema = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().trim().regex(/^ses_[a-zA-Z0-9]+$/, 'sessionId must be a valid opencode session id (ses_...)'),
+});
+
 export const runOpencodeSchema = z.object({
   prompt: z.string().trim().min(1).max(10_000),
   model: z

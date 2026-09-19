@@ -2,7 +2,7 @@ import { CommandExitError, Sandbox, SandboxNotFoundError } from 'e2b';
 import { env } from '../../config/env';
 import { ApiError } from '../../lib/errors';
 import { createE2bSandbox } from '../../lib/e2b';
-import { parseOpencodeEvents, summarizeOpencodeEvents } from '../../lib/opencodeEvents';
+import { parseOpencodeEvents, parseOpencodeExport, summarizeOpencodeEvents } from '../../lib/opencodeEvents';
 import { shellQuote } from '../../lib/shellQuote';
 import { supabaseAdmin } from '../../lib/supabase';
 import { getProviderEnvVars } from '../ai-provider/ai-provider.service';
@@ -68,6 +68,14 @@ export async function createSandboxWithRepo(userId: string, input: CreateSandbox
       password: accessToken,
       depth: 1,
     });
+
+    // The template's preinstalled opencode version can lag behind what
+    // opencode's free-tier API requires (e.g. template has 1.17.13, free
+    // tier started requiring 1.18.0+, causing every free-tier run to fail
+    // with a 426). Best-effort upgrade once per sandbox at creation time
+    // rather than on every opencode run; non-fatal if it fails/times out —
+    // opencode is still usable (paid provider keys are unaffected either way).
+    await sandbox.commands.run('opencode upgrade', { timeoutMs: 30_000 }).catch(() => undefined);
 
     await updateSandboxRow(row.id, { status: 'ready' });
 
@@ -186,6 +194,73 @@ export async function runOpencode(userId: string, sandboxRowId: string, input: R
     }
     const message = err instanceof Error ? err.message : 'Unknown error running opencode';
     throw ApiError.internal('Failed to run opencode', message);
+  }
+}
+
+/**
+ * Lists opencode sessions that exist in the sandbox (opencode persists these
+ * to its own state under the sandbox filesystem — nothing in our DB tracks
+ * them). Parses `opencode session list`'s table output rather than a JSON
+ * flag, since the CLI doesn't offer one for this subcommand.
+ */
+export async function listOpencodeSessions(userId: string, sandboxRowId: string) {
+  const sandbox = await connectToSandbox(userId, sandboxRowId);
+
+  const result = await sandbox.commands
+    .run('opencode session list', { cwd: SANDBOX_REPO_PATH, timeoutMs: 30_000 })
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      throw ApiError.internal('Failed to list opencode sessions', message);
+    });
+
+  const lines = result.stdout.split('\n');
+  // Table has a header row and a "───" separator row before the data rows;
+  // skip anything before the separator rather than assuming a fixed offset.
+  const separatorIndex = lines.findIndex((line) => line.trim().startsWith('─'));
+  const dataLines = separatorIndex === -1 ? [] : lines.slice(separatorIndex + 1);
+
+  return dataLines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      // Columns are whitespace-padded to align; 2+ spaces separates them,
+      // but a title can itself contain single spaces, so split on runs of
+      // 2+ spaces rather than a fixed-width slice.
+      const parts = line.split(/ {2,}/).map((p) => p.trim());
+      const [id, title, updated] = parts;
+      return { id, title: title ?? '', updated: updated ?? '' };
+    })
+    .filter((row) => row.id?.startsWith('ses_'));
+}
+
+/**
+ * Fetches full message/event history for one opencode session via
+ * `opencode export`, parsed into the same event vocabulary the streaming
+ * WS (`opencode/stream`) uses, so a client can reuse its rendering code for
+ * both live and historical messages.
+ */
+export async function getOpencodeSessionHistory(userId: string, sandboxRowId: string, sessionId: string) {
+  const sandbox = await connectToSandbox(userId, sandboxRowId);
+
+  let result;
+  try {
+    result = await sandbox.commands.run(`opencode export ${shellQuote(sessionId)}`, {
+      cwd: SANDBOX_REPO_PATH,
+      timeoutMs: 30_000,
+    });
+  } catch (err) {
+    if (err instanceof CommandExitError) {
+      throw ApiError.notFound('Opencode session not found');
+    }
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    throw ApiError.internal('Failed to export opencode session', message);
+  }
+
+  try {
+    return parseOpencodeExport(result.stdout);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    throw ApiError.internal('Failed to parse opencode session export', message);
   }
 }
 

@@ -104,6 +104,78 @@ export function parseOpencodeEvents(rawOutput: string): OpencodeEvent[] {
   return events;
 }
 
+interface ExportPart {
+  type: string;
+  text?: string;
+  tool?: string;
+  state?: { status?: string; input?: unknown; output?: string };
+  tokens?: { total: number; input: number; output: number };
+  cost?: number;
+}
+
+interface ExportMessage {
+  info: {
+    id: string;
+    role: 'user' | 'assistant';
+    time: { created: number; completed?: number };
+    error?: { name?: string; data?: { message?: string } };
+  };
+  parts: ExportPart[];
+}
+
+export interface ExportedSessionMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  createdAt: number;
+  events: OpencodeEvent[];
+}
+
+/**
+ * Parses `opencode export <sessionID>`'s JSON output (a persisted, nested
+ * `{ info, messages: [{ info, parts }] }` transcript — a different shape
+ * from the flat `--format json` streaming events above, since it represents
+ * already-completed history rather than an in-progress run) into the same
+ * `OpencodeEvent` vocabulary the streaming WS uses, grouped by message, so a
+ * client can reuse its existing per-event-type rendering.
+ */
+export function parseOpencodeExport(raw: string): { sessionId: string; title: string; messages: ExportedSessionMessage[] } {
+  const parsed = JSON.parse(raw) as { info: { id: string; title: string }; messages: ExportMessage[] };
+
+  const messages: ExportedSessionMessage[] = parsed.messages.map((msg) => {
+    const events: OpencodeEvent[] = [];
+    const sessionId = parsed.info.id;
+
+    for (const part of msg.parts) {
+      if (part.type === 'text' && part.text) {
+        events.push({ type: 'text', sessionId, text: part.text });
+      } else if (part.type === 'tool') {
+        events.push({
+          type: 'tool_use',
+          sessionId,
+          tool: part.tool ?? 'unknown',
+          input: part.state?.input,
+          output: part.state?.output,
+          status: part.state?.status,
+        });
+      } else if (part.type === 'step-finish') {
+        events.push({ type: 'step_finish', sessionId, tokens: part.tokens, cost: part.cost });
+      }
+    }
+
+    if (msg.info.error) {
+      events.push({
+        type: 'error',
+        sessionId,
+        message: msg.info.error.data?.message ?? msg.info.error.name ?? 'Unknown opencode error',
+      });
+    }
+
+    return { id: msg.info.id, role: msg.info.role, createdAt: msg.info.time.created, events };
+  });
+
+  return { sessionId: parsed.info.id, title: parsed.info.title, messages };
+}
+
 /**
  * Extracts the final assistant reply (concatenated text events, or the error
  * message if the run failed before producing any text) and the session id.

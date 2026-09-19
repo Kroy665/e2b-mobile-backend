@@ -7,7 +7,12 @@ import { validate } from '../../middleware/validate';
 import { filesRouter } from './files.routes';
 import { gitRouter } from './git.routes';
 import { serversRouter } from './servers.routes';
-import { createSandboxSchema, runOpencodeSchema, sandboxIdParamSchema } from './sandboxes.schemas';
+import {
+  createSandboxSchema,
+  opencodeSessionParamSchema,
+  runOpencodeSchema,
+  sandboxIdParamSchema,
+} from './sandboxes.schemas';
 import * as sandboxesService from './sandboxes.service';
 
 export const sandboxesRouter = Router();
@@ -81,6 +86,28 @@ sandboxesRouter.post(
     if (!req.user) throw ApiError.unauthorized();
     const { id } = req.params as unknown as { id: string };
     const result = await sandboxesService.runOpencode(req.user.id, id, req.body);
+    res.status(StatusCodes.OK).json({ data: result });
+  })
+);
+
+sandboxesRouter.get(
+  '/:id/opencode/sessions',
+  validate({ params: sandboxIdParamSchema }),
+  asyncHandler(async (req, res) => {
+    if (!req.user) throw ApiError.unauthorized();
+    const { id } = req.params as unknown as { id: string };
+    const result = await sandboxesService.listOpencodeSessions(req.user.id, id);
+    res.status(StatusCodes.OK).json({ data: result });
+  })
+);
+
+sandboxesRouter.get(
+  '/:id/opencode/sessions/:sessionId',
+  validate({ params: opencodeSessionParamSchema }),
+  asyncHandler(async (req, res) => {
+    if (!req.user) throw ApiError.unauthorized();
+    const { id, sessionId } = req.params as unknown as { id: string; sessionId: string };
+    const result = await sandboxesService.getOpencodeSessionHistory(req.user.id, id, sessionId);
     res.status(StatusCodes.OK).json({ data: result });
   })
 );

@@ -78,6 +78,14 @@ The default sandbox template (`E2B_TEMPLATE_ID`) comes with [opencode](https://o
 - **Blocking response shape** (`POST .../opencode`): `{ text, sessionId, error, events, exitCode }` — `text` is the concatenated assistant reply, `events` is the full typed event list (useful for rendering tool-call steps), `error` is set when the run failed before producing a reply. A non-zero `exitCode` is returned as a normal `200`, not an HTTP error, since it's a meaningful result for the caller to show the user.
 - **Streaming** (`WS .../opencode/stream`): see below — same events, delivered live instead of all at once.
 - **Injection safety**: the prompt, model, and session id are POSIX-shell-quoted (`src/lib/shellQuote.ts`, unit-tested against real shell execution) before being placed in the command string run inside the sandbox — a prompt containing `` ` ``, `$()`, `;`, quotes, etc. is passed to opencode as inert literal text, never interpreted by the shell.
+- **Sandbox template version drift**: `opencode`'s free tier occasionally requires a newer CLI version than what's baked into the E2B template (seen: template had 1.17.13, free tier started requiring 1.18.0+, breaking every free-tier run with an HTTP 426 until fixed). `createSandboxWithRepo` runs a best-effort `opencode upgrade` once per sandbox right after cloning (non-fatal if it fails/times out) so this self-heals without needing to rebuild the template for every such bump.
+
+### opencode session history
+
+Unlike the run endpoints above (which only accept a `sessionId` to *continue* a conversation), these let a client fetch history for sessions that already exist — useful for restoring a chat after the app is closed/reopened, since nothing about a session lives in our own database; it's entirely opencode's own state inside the sandbox filesystem.
+
+- **`GET /api/v1/sandboxes/:id/opencode/sessions`** — lists sessions in the sandbox (`opencode session list`, table output parsed since the CLI has no JSON flag for this subcommand). Returns `[{ id, title, updated }]`.
+- **`GET /api/v1/sandboxes/:id/opencode/sessions/:sessionId`** — full message history for one session (`opencode export`), parsed into the same event vocabulary as the streaming/blocking endpoints (`text`, `tool_use`, `step_finish`, `error`) grouped by message, so history and live messages can share rendering code. Returns `{ sessionId, title, messages: [{ id, role, createdAt, events }] }`. `404` if the session id doesn't exist.
 
 ### Streaming opencode (WebSocket)
 
@@ -182,6 +190,8 @@ All routes are prefixed `/api/v1` except health checks.
 | DELETE | `/api/v1/sandboxes/:id` | bearer | Permanently terminate a sandbox |
 | POST | `/api/v1/sandboxes/:id/pause` | bearer | Pause a sandbox (resumable, preserves state) |
 | POST | `/api/v1/sandboxes/:id/opencode` | bearer | Run `opencode` once, blocking until done (accepts `sessionId` to continue a conversation) |
+| GET | `/api/v1/sandboxes/:id/opencode/sessions` | bearer | List opencode sessions that exist in the sandbox |
+| GET | `/api/v1/sandboxes/:id/opencode/sessions/:sessionId` | bearer | Full message history for one opencode session |
 | GET | `/api/v1/sandboxes/:id/files?path=.` | bearer | List a directory in the cloned repo |
 | GET | `/api/v1/sandboxes/:id/files/content?path=...` | bearer | Read a file's content |
 | PUT | `/api/v1/sandboxes/:id/files/content` | bearer | Write (create/overwrite) a file |
